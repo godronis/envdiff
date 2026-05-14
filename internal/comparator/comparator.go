@@ -1,46 +1,54 @@
-// Package comparator provides functionality for comparing parsed .env files
-// across multiple environments, identifying missing and mismatched keys.
 package comparator
 
-// Result holds the comparison outcome between two or more env files.
-type Result struct {
-	// MissingIn maps an environment name to keys missing from that environment.
-	MissingIn map[string][]string
-	// Mismatched contains keys whose values differ across environments.
-	Mismatched []MismatchedKey
+import "sort"
+
+// MissingKey represents a key that is present in at least one env file
+// but absent in another.
+type MissingKey struct {
+	Key  string `json:"key"`
+	File string `json:"file"`
 }
 
-// MismatchedKey describes a key whose value differs across environments.
+// MismatchedKey represents a key that exists in all files but has
+// differing values across them.
 type MismatchedKey struct {
-	Key    string
-	Values map[string]string // env name -> value
+	Key    string            `json:"key"`
+	Values map[string]string `json:"values"`
 }
 
-// Compare takes a map of environment name -> parsed key/value pairs and
-// returns a Result describing all missing and mismatched keys.
+// Result holds the full output of a comparison between env files.
+type Result struct {
+	Missing    []MissingKey    `json:"missing"`
+	Mismatched []MismatchedKey `json:"mismatched"`
+}
+
+// Compare takes a map of filename -> key/value pairs and returns a Result
+// describing all missing and mismatched keys across the provided env files.
 func Compare(envs map[string]map[string]string) Result {
-	allKeys := collectAllKeys(envs)
+	keys := collectAllKeys(envs)
+	var result Result
 
-	result := Result{
-		MissingIn:  make(map[string][]string),
-		Mismatched: []MismatchedKey{},
-	}
+	for _, key := range keys {
+		presentIn := []string{}
+		values := map[string]string{}
 
-	for _, key := range allKeys {
-		values := make(map[string]string)
-		presentIn := 0
-
-		for envName, pairs := range envs {
-			val, ok := pairs[key]
-			if !ok {
-				result.MissingIn[envName] = append(result.MissingIn[envName], key)
-			} else {
-				values[envName] = val
-				presentIn++
+		for file, env := range envs {
+			if val, ok := env[key]; ok {
+				presentIn = append(presentIn, file)
+				values[file] = val
 			}
 		}
 
-		if presentIn > 1 && hasMismatch(values) {
+		if len(presentIn) < len(envs) {
+			for file := range envs {
+				if _, ok := envs[file][key]; !ok {
+					result.Missing = append(result.Missing, MissingKey{
+						Key:  key,
+						File: file,
+					})
+				}
+			}
+		} else if hasMismatch(values) {
 			result.Mismatched = append(result.Mismatched, MismatchedKey{
 				Key:    key,
 				Values: values,
@@ -51,15 +59,13 @@ func Compare(envs map[string]map[string]string) Result {
 	return result
 }
 
-// collectAllKeys returns a deduplicated, sorted list of all keys across envs.
 func collectAllKeys(envs map[string]map[string]string) []string {
-	seen := make(map[string]struct{})
-	for _, pairs := range envs {
-		for k := range pairs {
-			seen[k] = struct{}{}
+	seen := map[string]struct{}{}
+	for _, env := range envs {
+		for key := range env {
+			seen[key] = struct{}{}
 		}
 	}
-
 	keys := make([]string, 0, len(seen))
 	for k := range seen {
 		keys = append(keys, k)
@@ -68,14 +74,13 @@ func collectAllKeys(envs map[string]map[string]string) []string {
 	return keys
 }
 
-// hasMismatch returns true if not all values in the map are identical.
 func hasMismatch(values map[string]string) bool {
 	var first string
-	init := false
+	var set bool
 	for _, v := range values {
-		if !init {
+		if !set {
 			first = v
-			init = true
+			set = true
 			continue
 		}
 		if v != first {
@@ -85,11 +90,6 @@ func hasMismatch(values map[string]string) bool {
 	return false
 }
 
-// sortStrings sorts a string slice in place (simple insertion sort).
 func sortStrings(s []string) {
-	for i := 1; i < len(s); i++ {
-		for j := i; j > 0 && s[j] < s[j-1]; j-- {
-			s[j], s[j-1] = s[j-1], s[j]
-		}
-	}
+	sort.Strings(s)
 }
