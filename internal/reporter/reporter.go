@@ -6,60 +6,62 @@ import (
 	"io"
 	"strings"
 
-	"github.com/user/envdiff/internal/comparator"
+	"github.com/yourusername/envdiff/internal/comparator"
+	"github.com/yourusername/envdiff/internal/summary"
 )
 
-// Format represents the output format for the report.
-type Format string
-
-const (
-	FormatText Format = "text"
-	FormatJSON Format = "json"
-)
-
-// Report writes the comparison result to the given writer in the specified format.
-func Report(w io.Writer, result comparator.Result, format Format) error {
-	switch format {
-	case FormatJSON:
-		return reportJSON(w, result)
-	case FormatText:
-		return reportText(w, result)
+// Report writes comparison results to w in the given format ("text" or "json").
+// It appends a summary section after the per-key output.
+func Report(w io.Writer, results []comparator.Result, format string) error {
+	switch strings.ToLower(format) {
+	case "text", "":
+		return reportText(w, results)
+	case "json":
+		return reportJSON(w, results)
 	default:
-		return fmt.Errorf("unsupported format: %s", format)
+		return fmt.Errorf("unsupported format: %q", format)
 	}
 }
 
-func reportText(w io.Writer, result comparator.Result) error {
-	if len(result.Missing) == 0 && len(result.Mismatched) == 0 {
-		_, err := fmt.Fprintln(w, "✓ No differences found.")
+func reportText(w io.Writer, results []comparator.Result) error {
+	if len(results) == 0 {
+		_, err := fmt.Fprintln(w, "No differences found.")
 		return err
 	}
-
-	var sb strings.Builder
-
-	if len(result.Missing) > 0 {
-		sb.WriteString("Missing keys:\n")
-		for _, m := range result.Missing {
-			sb.WriteString(fmt.Sprintf("  [%s] %s\n", m.File, m.Key))
-		}
-	}
-
-	if len(result.Mismatched) > 0 {
-		sb.WriteString("Mismatched values:\n")
-		for _, m := range result.Mismatched {
-			sb.WriteString(fmt.Sprintf("  %s:\n", m.Key))
-			for file, val := range m.Values {
-				sb.WriteString(fmt.Sprintf("    %s = %q\n", file, val))
+	for _, r := range results {
+		switch r.Status {
+		case comparator.StatusMissing:
+			if _, err := fmt.Fprintf(w, "[MISSING]  %s (absent in: %s)\n", r.Key, strings.Join(r.MissingIn, ", ")); err != nil {
+				return err
+			}
+		case comparator.StatusMismatch:
+			if _, err := fmt.Fprintf(w, "[MISMATCH] %s\n", r.Key); err != nil {
+				return err
+			}
+			for file, val := range r.Values {
+				if _, err := fmt.Fprintf(w, "             %s = %q\n", file, val); err != nil {
+					return err
+				}
 			}
 		}
 	}
-
-	_, err := fmt.Fprint(w, sb.String())
+	// Append summary
+	stats := summary.Compute(results)
+	_, err := fmt.Fprint(w, summary.FormatText(stats))
 	return err
 }
 
-func reportJSON(w io.Writer, result comparator.Result) error {
+type jsonOutput struct {
+	Results []comparator.Result `json:"results"`
+	Summary summary.Stats       `json:"summary"`
+}
+
+func reportJSON(w io.Writer, results []comparator.Result) error {
+	out := jsonOutput{
+		Results: results,
+		Summary: summary.Compute(results),
+	}
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
-	return enc.Encode(result)
+	return enc.Encode(out)
 }
